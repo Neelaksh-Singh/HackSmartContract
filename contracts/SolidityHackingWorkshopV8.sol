@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+
+// have to provide licence
+
 pragma solidity ^0.8.0;
 
 /* This program is free software. It comes without any warranty, to
@@ -51,7 +55,8 @@ contract DiscountedBuy {
 
     /// @dev Buy an object.
     function buy() public payable {
-        require(msg.value * (1 + objectBought[msg.sender]) == basePrice);
+        // require(msg.value * (1 + objectBought[msg.sender]) == price());
+        require(msg.value==price());
         objectBought[msg.sender]+=1;
     }
     
@@ -89,7 +94,7 @@ contract HeadOrTail {
     
     function guess(bool _guessHead) public payable {
         require(chosen);
-        require(msg.value == 1 ether);
+        require(msg.value == 1 ether && address(this).balance>=2 ether);
         
         if (_guessHead == lastChoiceHead)
             payable(msg.sender).transfer(2 ether);
@@ -112,8 +117,9 @@ contract Vault {
     
     /// @dev Redeem your ETH.
     function redeem() public {
-        msg.sender.call{ value: balances[msg.sender] }("");
+        (bool success,) = msg.sender.call{ value: balances[msg.sender] }("");
         balances[msg.sender]=0;
+        require(success);
     }
 }
 
@@ -171,7 +177,7 @@ contract HeadTail {
      *  Send ETH to party B.
      * */
     function timeOut() public {
-        require(block.timestamp > timeB + 1 days);
+        require(block.timestamp > timeB + 1 days && timeB!=0);
         require(address(this).balance >= 2 ether);
         partyB.transfer(2 ether);
     }
@@ -182,7 +188,7 @@ contract HeadTail {
 //*** Exercice 6 ***//
 // Simple token you can buy and send.
 contract SimpleToken {
-    mapping(address => int) public balances;
+    mapping(address => uint) public balances;
     
     /// @dev Creator starts with all the tokens.
     constructor()  {
@@ -193,7 +199,8 @@ contract SimpleToken {
      *  @param _recipient The recipient.
      *  @param _amount The amount to send.
      */
-    function sendToken(address _recipient, int _amount) public {
+    function sendToken(address _recipient, uint _amount) public {
+        require(balances[msg.sender]>= _amount);
         balances[msg.sender]-=_amount;
         balances[_recipient]+=_amount;
     }
@@ -204,7 +211,7 @@ contract SimpleToken {
 // Simple token you can buy and send through a bonded curve. We assume that order frontrunning is fine.
 contract LinearBondedCurve {
     mapping(address => uint) public balances;
-    uint public totalSupply;
+    uint public totalSupply=0;
     
     /// @dev Buy token. The price is linear to the total supply.
     function buy() public payable {
@@ -217,6 +224,7 @@ contract LinearBondedCurve {
     /// @param _amount The amount of tokens to sell.
     function sell(uint _amount) public {
         uint ethToReceive = ((1e18 + totalSupply) * _amount) / 1e18;
+        require(balances[msg.sender]>= _amount);
         balances[msg.sender] -= _amount;
         totalSupply -= _amount;
         payable(msg.sender).transfer(ethToReceive);
@@ -227,6 +235,7 @@ contract LinearBondedCurve {
      *  @param _amount The amount to send.
      */
     function sendToken(address _recipient, uint _amount) public {
+        require(balances[msg.sender]>= _amount);
         balances[msg.sender]-=_amount;
         balances[_recipient]+=_amount;
     }
@@ -273,8 +282,11 @@ contract Coffers {
     function closeAccount() external {
         Coffer storage coffer = coffers[msg.sender];
         uint amountToSend;
-        for (uint i=0; i<coffer.nbSlots; ++i)
+        for (uint i=0; i<coffer.nbSlots; ++i){
             amountToSend += coffer.slots[i];
+            coffer.slots[i]=0;
+        }
+            
         coffer.nbSlots = 0;
         payable(msg.sender).transfer(amountToSend);
     }
@@ -290,6 +302,7 @@ contract CommonCoffers {
      *  @param _owner The coffer to deposit money on.
      * */
     function deposit(address _owner) payable external {
+        require(msg.value>0);
         if (scalingFactor != 0) {
             uint toAdd = (scalingFactor * msg.value) / (address(this).balance - msg.value);
             coffers[_owner] += toAdd;
@@ -306,6 +319,7 @@ contract CommonCoffers {
      * */
     function withdraw(uint _amount) external {
         uint toRemove = (scalingFactor * _amount) / address(this).balance;
+        require(coffers[msg.sender]>=toRemove, "Not Enough Balance!!");
         coffers[msg.sender] -= toRemove;
         scalingFactor -= toRemove;
         payable(msg.sender).transfer(_amount);
@@ -364,25 +378,25 @@ contract Resolver {
      */
     function payReward() public {
         require(declared, "The winner is not declared");
-        uint depositA = partyDeposits[0];
-        uint depositB = partyDeposits[1];
+        require(sides[0]==msg.sender || sides[1]==msg.sender,"Not a participant");
 
-        partyDeposits[0] = 0;
-        partyDeposits[1] = 0;
+        uint _side = sides[0] == msg.sender? 0 : 1 ;
+        require(partyDeposits[_side]>baseDeposit,"Already withdrawn");
 
-        // Pay the winner. Note that if no one put a deposit for the winning side, the reward will be burnt.
-        require(sides[uint(winner)].send(reward), "Unsuccessful send");
+        uint w_deposit = partyDeposits[_side];
 
-        // Reimburse the surplus deposit if there was one.
-        if (depositA > baseDeposit && sides[0]!=address(0)) {
-            require(sides[0].send(depositA - baseDeposit), "Unsuccessful send");    
+        partyDeposits[_side] = 0;
+        sides[_side] = payable(address(0));
+
+        if(_side == uint(winner)){
+            // Pay the winner. Note that if no one put a deposit for the winning side, the reward will be burnt.
+            require(sides[_side].send(reward), "Unsuccessful send");
+            reward = 0;
         }
 
-        if (depositB > baseDeposit && sides[1]!=address(0)) {
-            require(sides[1].send(depositB - baseDeposit), "Unsuccessful send");    
+        if(w_deposit>baseDeposit){
+            require(sides[_side].send(w_deposit - baseDeposit), "Unsuccessful send");
         }
-
-        reward = 0;
     }
     
 }
@@ -414,7 +428,7 @@ contract Registry {
     function register(string calldata _name, string calldata _surname, uint _nonce) public {
         require(!isRegistered[_name][_surname][_nonce], "This profile is already registered");
         isRegistered[_name][_surname][_nonce] = true;
-        bytes32 ID = keccak256(abi.encodePacked(_name, _surname, _nonce));
+        bytes32 ID = keccak256(abi.encode(_name, _surname, _nonce));
         User storage user = users[ID];
         user.regAddress = payable(msg.sender);
         user.timestamp = uint64(block.timestamp);
@@ -437,7 +451,7 @@ contract SnapShotToken {
     /// @dev Buy token at the price of 1ETH/token.
     function buyToken() public payable {
         uint _balance = balances[msg.sender];
-        uint _newBalance = _balance + msg.value / 1 ether;
+        uint _newBalance = _balance + msg.value;
         balances[msg.sender] = _newBalance;
 
         _updateCheckpoint(msg.sender, _balance, _newBalance);
@@ -451,6 +465,8 @@ contract SnapShotToken {
         uint _balancesFrom = balances[msg.sender];
         uint _balancesTo = balances[_to];
 
+        require(_balancesFrom>= _value, "Not Enough Balance for Transaction");
+        
         uint _balancesFromNew = _balancesFrom - _value;
         balances[msg.sender] = _balancesFromNew;
 
@@ -512,7 +528,7 @@ contract GuessTheAverage {
 
     mapping(address => Player) public players; // Maps an address to its respective Player status.
     mapping(uint => address) public indexToPlayer; // Maps a guess index to the player who made the guess.
-
+    mapping(address => uint) public distributionFailed; // Maps addresses of those who couldn't claim reward during distribution
     constructor(uint32 _commitDuration, uint32 _revealDuration) {
         start = block.timestamp;
         commitDuration = _commitDuration;
@@ -601,11 +617,21 @@ contract GuessTheAverage {
         require(currentStage == Stage.WinnersFound, "Winners must have been found");
         for (uint256 i = cursorDistribute; i < winners.length && (_count == 0 || i < cursorDistribute + _count); i++) {
             // Send ether to the winners, use send not to block.
-            payable(winners[i]).send(totalBalance / (winners.length - numberOfLosers));
+            bool success = payable(winners[i]).send(totalBalance / (winners.length - numberOfLosers));
+            if(!success) distributionFailed[winners[i]] = totalBalance/(winners.length - numberOfLosers);
             if (i == winners.length -1) currentStage = Stage.Distributed;
         }
         // Update the cursor in case we haven't finished going through the list.
         cursorDistribute += _count;
+    }
+
+    function claimable() public payable {
+        require(distributionFailed[msg.sender]>0, "Nothing to be Claimed");
+        uint _amount = distributionFailed[msg.sender];
+        (bool success,) = payable(address(msg.sender)).call{value: _amount}("");
+        require(success, "Claim Failed!");
+        delete distributionFailed[msg.sender];
+
     }
 }
 
@@ -629,8 +655,8 @@ contract PiggyBank {
 
     /// @dev Withdraw the entire smart contract balance
     function withdrawAll() public {
-        require(msg.sender == owner && address(this).balance == 10 ether);
-        payable(owner).send(address(this).balance);
+        require(msg.sender == owner && address(this).balance >= 10 ether);
+        payable(owner).transfer(address(this).balance);
     }
 }
 
@@ -642,12 +668,15 @@ contract PiggyBank {
 contract WinnerTakesAll {
 
     struct Round {
+        bool isActive;
         uint rewards;
         mapping(address => bool) isAllowed;
     }
 
     address owner;
     Round[] rounds;
+    uint public activeRounds;
+    uint public totalRounds;
 
     constructor() {
         owner = msg.sender;
@@ -659,17 +688,23 @@ contract WinnerTakesAll {
     }
 
     function createNewRounds(uint _numberOfRounds) external {
-        for (uint i = 0; i < _numberOfRounds; i++) {
-            rounds.push();
+        uint j;
+        uint i=0;
+        for (; i < _numberOfRounds; i++) {
+            rounds[i].isActive=true;
+            j++;
         }
+        activeRounds = j;
+        totalRounds=i;
     }
 
     function setRewardsAtRound(uint _roundIndex) external payable onlyOwner() {
-        require(rounds[_roundIndex].rewards == 0);
+        require(rounds[_roundIndex].rewards == 0 && rounds[_roundIndex].isActive);
         rounds[_roundIndex].rewards = msg.value;
     }
 
     function setRewardsAtRoundfor(uint _roundIndex, address[] calldata _recipients) external onlyOwner() {
+        require(rounds[_roundIndex].isActive);
         for (uint i; i < _recipients.length; i++) {
             rounds[_roundIndex].isAllowed[_recipients[i]] = true;
         }
@@ -680,14 +715,31 @@ contract WinnerTakesAll {
     }
 
     function withdrawRewards(uint _roundIndex) external {
+        require(rounds[_roundIndex].isActive);
         require(rounds[_roundIndex].isAllowed[msg.sender]);
-        uint amount = rounds[_roundIndex].rewards;
+        require(rounds[_roundIndex].rewards>0);
+        uint _amount = rounds[_roundIndex].rewards;
         rounds[_roundIndex].rewards = 0;
-        payable(msg.sender).transfer(amount);
+        rounds[_roundIndex].isActive=false;
+        activeRounds-=1;
+        payable(msg.sender).transfer(_amount);
     }
 
     function clearRounds() external onlyOwner {
-        delete rounds;
+        // delete rounds;
+        uint[] memory _activeRoundsList = new uint[](activeRounds);
+        uint j;
+        for(uint i=0;i<totalRounds;i++){
+            if(rounds[i].isActive){
+                _activeRoundsList[j]=i;
+                j++;
+            }
+        }
+
+        for(uint i=0;i<_activeRoundsList.length;i++){
+            rounds[_activeRoundsList[i]].isActive = false;
+        }
+        activeRounds = 0;
     }
 
     function withrawETH() external onlyOwner {
