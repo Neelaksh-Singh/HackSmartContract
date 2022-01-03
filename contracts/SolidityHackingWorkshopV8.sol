@@ -19,28 +19,23 @@ Being able to destroy your own stuff is not a vulnerability and should be dealt 
 
 //*** Exercice 1 ***//
 // Contract to store and redeem money.
+
+// Here I have created a map instead of array of structs, since this saves on Gas fees.
 contract Store {
-    struct Safe {
-        address owner;
-        uint amount;
-    }
-    
-    Safe[] public safes;
+    mapping(address => uint) public safes;
     
     /// @dev Store some ETH.
     function store() public payable {
-        safes.push(Safe({owner: msg.sender, amount: msg.value}));
+        require(msg.value>0, "Not Enough to store!!");
+        safes[msg.sender]+= msg.value;
     }
     
     /// @dev Take back all the amount stored.
     function take() public {
-        for (uint i; i<safes.length; ++i) {
-            Safe storage safe = safes[i];
-            if (safe.owner==msg.sender && safe.amount!=0) {
-                payable(msg.sender).transfer(safe.amount);
-                safe.amount=0;
-            }
-        }
+        require(safes[msg.sender]>0,"Not enough balance");
+        uint _amount = safes[msg.sender];
+        delete safes[msg.sender];
+        payable(msg.sender).transfer(_amount);
         
     }
 }
@@ -91,10 +86,10 @@ contract HeadOrTail {
         lastParty=payable(msg.sender);
     }
     
-    
+    // No changes required
     function guess(bool _guessHead) public payable {
         require(chosen);
-        require(msg.value == 1 ether && address(this).balance>=2 ether);
+        require(msg.value == 1 ether);
         
         if (_guessHead == lastChoiceHead)
             payable(msg.sender).transfer(2 ether);
@@ -116,9 +111,12 @@ contract Vault {
     }
     
     /// @dev Redeem your ETH.
+
+    // Reentrancy bug, i.e we shouldn't call external function before internal work is done
     function redeem() public {
-        (bool success,) = msg.sender.call{ value: balances[msg.sender] }("");
+        uint _amount = balances[msg.sender];
         balances[msg.sender]=0;
+        (bool success,) = msg.sender.call{ value: _amount }("");        
         require(success);
     }
 }
@@ -211,7 +209,7 @@ contract SimpleToken {
 // Simple token you can buy and send through a bonded curve. We assume that order frontrunning is fine.
 contract LinearBondedCurve {
     mapping(address => uint) public balances;
-    uint public totalSupply=0;
+    uint public totalSupply;
     
     /// @dev Buy token. The price is linear to the total supply.
     function buy() public payable {
@@ -224,7 +222,6 @@ contract LinearBondedCurve {
     /// @param _amount The amount of tokens to sell.
     function sell(uint _amount) public {
         uint ethToReceive = ((1e18 + totalSupply) * _amount) / 1e18;
-        require(balances[msg.sender]>= _amount);
         balances[msg.sender] -= _amount;
         totalSupply -= _amount;
         payable(msg.sender).transfer(ethToReceive);
@@ -234,8 +231,11 @@ contract LinearBondedCurve {
      *  @param _recipient The recipient.
      *  @param _amount The amount to send.
      */
+
+    // Here we need to ensure that the amount of tokens doesn't exceed the total supply with
+    // both user and the contract. This ensures that there aren't free token supply.
     function sendToken(address _recipient, uint _amount) public {
-        require(balances[msg.sender]>= _amount);
+        require(balances[msg.sender]>= _amount && totalSupply >= _amount);
         balances[msg.sender]-=_amount;
         balances[_recipient]+=_amount;
     }
@@ -301,6 +301,9 @@ contract CommonCoffers {
     /** @dev Deposit money in one's coffer slot.
      *  @param _owner The coffer to deposit money on.
      * */
+    // We need msg.value >0, since when scalingFactor == 0, we can pass value as 0,
+    // this in turn will be a security issue, as the next depositor's toAdd will try dividing
+    // by -ve number for uint.
     function deposit(address _owner) payable external {
         require(msg.value>0);
         if (scalingFactor != 0) {
@@ -319,7 +322,6 @@ contract CommonCoffers {
      * */
     function withdraw(uint _amount) external {
         uint toRemove = (scalingFactor * _amount) / address(this).balance;
-        require(coffers[msg.sender]>=toRemove, "Not Enough Balance!!");
         coffers[msg.sender] -= toRemove;
         scalingFactor -= toRemove;
         payable(msg.sender).transfer(_amount);
@@ -449,6 +451,9 @@ contract SnapShotToken {
     event BalanceUpdated(address indexed user, uint oldBalance, uint newBalance);
     
     /// @dev Buy token at the price of 1ETH/token.
+
+    // By dividing with 1 ether we would be rounding to nearest uint if msg.value isn't multiple
+    // of 1e18. To overcome this we assume that token has 18 decimals like Ether. 
     function buyToken() public payable {
         uint _balance = balances[msg.sender];
         uint _newBalance = _balance + msg.value;
@@ -465,8 +470,6 @@ contract SnapShotToken {
         uint _balancesFrom = balances[msg.sender];
         uint _balancesTo = balances[_to];
 
-        require(_balancesFrom>= _value, "Not Enough Balance for Transaction");
-        
         uint _balancesFromNew = _balancesFrom - _value;
         balances[msg.sender] = _balancesFromNew;
 
@@ -613,6 +616,10 @@ contract GuessTheAverage {
     /** @dev Distributes rewards to winners.
      *  @param _count The number of transactions to execute. Executes until the end if set to "0" or number higher than number of winners in the list.
      */
+
+    // Here if several send fail, then users will not be able to claim their refund.
+    // Thus, additional function is needed to distribute those failed refunds.
+
     function distribute(uint256 _count) public {
         require(currentStage == Stage.WinnersFound, "Winners must have been found");
         for (uint256 i = cursorDistribute; i < winners.length && (_count == 0 || i < cursorDistribute + _count); i++) {
@@ -628,10 +635,10 @@ contract GuessTheAverage {
     function claimable() public payable {
         require(distributionFailed[msg.sender]>0, "Nothing to be Claimed");
         uint _amount = distributionFailed[msg.sender];
+        delete distributionFailed[msg.sender];
         (bool success,) = payable(address(msg.sender)).call{value: _amount}("");
         require(success, "Claim Failed!");
-        delete distributionFailed[msg.sender];
-
+        
     }
 }
 
@@ -725,10 +732,14 @@ contract WinnerTakesAll {
         payable(msg.sender).transfer(_amount);
     }
 
+    // When owner clears rounds, the array and rewards will be set to 0, but isAllowed will persist,
+    // i.e, when the next new rounds are created, the previous address are still allowed to call withdrawRewards()
+    // both before and after the owner has created and set rounds respectively.
     function clearRounds() external onlyOwner {
         // delete rounds;
         uint[] memory _activeRoundsList = new uint[](activeRounds);
         uint j;
+        // Dynamically storing the position of rounds in _activeRoundsList
         for(uint i=0;i<totalRounds;i++){
             if(rounds[i].isActive){
                 _activeRoundsList[j]=i;
